@@ -1,21 +1,19 @@
 #include <Arduino.h>
 
-// put function declarations here:
-int myFunction(int, int);
+
+int pinGPIO = 2;
 
 void setup()
 {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  pinMode(pinGPIO, OUTPUT);
 }
 
 void loop()
 {
-  // put your main code here, to run repeatedly:
+  delay(5000);
+  digitalWrite(pinGPIO, HIGH);
+  delay(5000);
+  digitalWrite(pinGPIO, LOW);
 }
 
 // put function definitions here:
-int myFunction(int x, int y)
-{
-  return x + y;
-}
