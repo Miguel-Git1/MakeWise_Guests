@@ -16,14 +16,13 @@
 #include <ESPAsyncWebServer.h>
 using namespace std;
 
-#define BME_SCK 16
-#define BME_SDA 4
+#define BME_SCK 13
+#define BME_MISO 12
+#define BME_MOSI 11
+#define BME_CS 10
+#define SEALEVELPRESSURE_HPA (1018)
 
 Adafruit_BME280 bme; // use I2C interface
-Adafruit_Sensor *bme_temp = bme.getTemperatureSensor();
-Adafruit_Sensor *bme_pressure = bme.getPressureSensor();
-Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
-
 AsyncWebServer server(80);
 
 const char *ssid = "WI-7-2.4";
@@ -39,6 +38,7 @@ String html();
 double getTemperature();
 double getHumidity();
 double getPressure();
+double getAltitude();
 String getUpdate();
 void setup()
 {
@@ -122,6 +122,7 @@ String html()
   html += "      document.getElementById('temperature').textContent = values[0];";
   html += "      document.getElementById('pressure').textContent = values[1];";
   html += "      document.getElementById('humidity').textContent = values[2];";
+  html += "      document.getElementById('altitude').textContent = values[3];";
   html += "    });";
   html += "}, 5000);"; // Update every 5 seconds
   html += "</script>";
@@ -147,6 +148,9 @@ String html()
   html += "<p><strong>Humidity:</strong><span id='humidity'>";
   html += getHumidity();
   html += "</span>%</p>";
+  html += "<p><strong>Altitude(aprox.):</strong><span id='altitude'>";
+  html += getAltitude();
+  html += "</span>m</p>";
   html += "</div>";
   html += "</div>";
   html += "</script>";
@@ -155,23 +159,14 @@ String html()
   return html;
 }
 
-double getTemperature()
-{
-  double t = bme.readTemperature();
-  return t;
-}
-double getHumidity()
-{
-  double h = bme.readHumidity();
-  return h;
-}
-double getPressure()
-{
-  double p = bme.readPressure();
-  return p;
-}
+double getTemperature() { return bme.readTemperature(); }
+double getHumidity() { return bme.readHumidity(); }
+double getPressure() { return bme.readPressure() / 100.0F; }
+double getAltitude() { return bme.readAltitude(SEALEVELPRESSURE_HPA); }
+
 String getUpdate()
 {
-  String data = String(getTemperature()) + "," + String(getPressure()) + "," + String(getHumidity());
+  String data = String(getTemperature()) + "," + String(getPressure()) + "," + String(getHumidity()) +
+                "," + String(getAltitude());
   return data;
 }
