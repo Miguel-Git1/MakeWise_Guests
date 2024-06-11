@@ -1,24 +1,29 @@
 #include <Arduino.h>
-#include <FS.h>
-#include <SPIFFS.h>
-#include <esp_camera.h>
+#include <Wire.h>
+// DISABLE BROWNOUT
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
-#include <Wire.h>
-#include "jpeg_decoder.h"
+// WEB
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+// File System
+#include "FS.h"
+//  CAM
+#include "esp_camera.h"
 
-
-// Tensorflow
+// DECODE
+#include "jpeg_decoder.h"
+// Movement Sensor
+// #include "movesensor.h"
+// Model
+#include "model_data.h"
 #include "tensorflow/lite/micro/kernels/micro_ops.h"
 #include "tensorflow/lite/micro/tflite_bridge/micro_error_reporter.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/micro_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include <model_data.h> // Main Model
-
 
 
 #define PWDN_GPIO_NUM 32
@@ -39,11 +44,16 @@
 #define PCLK_GPIO_NUM 22
 
 #define IMG_WIDTH 100 // Model input width
-
 #define IMG_HEIGHT 75 // Model input height
 
-int8_t imageBuffer[IMG_WIDTH * IMG_HEIGHT * 3];
-AsyncWebServer server(80);
+
+bool motionDetected = false;
+// For the https
+const char *ssid = "WI-7-2.4";
+const char *pass = "inov84ever";
+const char *_server = "https://spot.makewise.vision/api/process/fD50i3hPckJtPGCS7ihABeuk3bVjDYcM/9RZtqX1MdYqAw3uh";
+camera_fb_t *fb = nullptr;
+
 
 namespace
 {
@@ -95,9 +105,9 @@ String PercentualDecode(TfLiteTensor *layer)
   }
 }
 
-String inferCarImage(const int8_t *image)
+String inferCarImage()
 {
-  memcpy(input->data.int8, image, sizeof(imageBuffer));
+  //memcpy(input->data.int8, image, sizeof(imageBuffer));
   int start = millis();
   error_reporter->Report("Invoking.");
 
@@ -160,45 +170,39 @@ void setupCamera()
     return;
   }
 
-  if (!SPIFFS.begin(true))
-  {
-    Serial.println("\nSPIFFS initialisation failed!\n");
-  }
-  else
-  {
-    Serial.printf("\nDone with SPIFFS!\n");
-  }
   for (int i = 0; i < 5; i++)
   {
-    camera_fb_t *fb = NULL;
+    camera_fb_t *fb = nullptr;
     fb = esp_camera_fb_get();
 
     if (!fb)
     {
       esp_camera_fb_return(fb);
-      fb = NULL;
+      fb = nullptr;
       Serial.printf("\n--- ERROR: Camera capture failed");
     }
     else
     {
       esp_camera_fb_return(fb);
-      Serial.println("\n--- Good Image ---");
+      Serial.printf("\n--- Good Image %i ---", i);
     }
   }
 }
 
 void saveImg()
 {
-  Serial.println("Taking a photo...");
-  camera_fb_t *fb = NULL;
-  fb = esp_camera_fb_get();
+  camera_fb_t *ffb = esp_camera_fb_get();
+  esp_camera_fb_return(ffb);
 
+  Serial.println("Taking a photo...");
+  camera_fb_t *fb = nullptr;
+  fb = esp_camera_fb_get();
   if (!fb)
   {
     esp_camera_fb_return(fb);
-    fb = NULL;
-    Serial.printf("Camera capture failed");
-    return;
+    fb = nullptr;
+    Serial.printf("\n--- Camera capture failed");
+    ESP.restart();
   }
   else
   {
@@ -206,18 +210,7 @@ void saveImg()
   }
 
 
-  File file = SPIFFS.open("/img.jpg", FILE_WRITE);
-  if (!file)
-  {
-    Serial.println("Failed to open file in writing mode");
-    return;
-  }
-  else
-  {
-    file.write(fb->buf, fb->len); // payload (image), payload length
-    Serial.printf("Saved file to path: /img.jpg With the size of: %d\n", fb->len);
-  }
-  file.close();
+  
   unsigned char *decoded, *p, *o;
   int x, y, v;
   int decoded_outsize = IMG_WIDTH * IMG_HEIGHT * 3;
@@ -244,42 +237,17 @@ void saveImg()
   esp_jpeg_image_output_t outimg;
   esp_err_t err = my_esp_jpeg_decode(&jpeg_cfg, &outimg);
 
-  unsigned long t = millis();
-  for (int i = 0; i < 10; i++)
-  {
-    esp_err_t err = my_esp_jpeg_decode(&jpeg_cfg, &outimg);
-  }
-  Serial.printf("\n--- ESP JPEG DECODE TIMER: %d", (millis() - t) / 10);
+
   esp_camera_fb_return(fb); 
-
-
-  file = SPIFFS.open("/img.raw", FILE_WRITE);
-  if (!file)
-  {
-    Serial.println("Failed to open file in writing mode");
-    return;
-  }
-  else
-  {
-    file.write(decoded, decoded_outsize); // payload (image), payload length
-    Serial.println("Saved file to path: /img.raw");
-  }
-  file.close();
-
-  
-
   for (int i = 0; i < decoded_outsize; i++)
   {
-    imageBuffer[i] = uint8Toint8(decoded[i]);
+    input->data.int8[i] = uint8Toint8(decoded[i]);
   }
-
-
-
-  Serial.printf("\n-- Consersion is done --\n");
+  Serial.printf("\n-- Conversion is done --\n");
   free(decoded);
 }
 
-void initWifiAndServer()
+void initWifi()
 {
   WiFi.begin("WI-7-2.4", "inov84ever");
   while (WiFi.status() != WL_CONNECTED)
@@ -290,13 +258,6 @@ void initWifiAndServer()
   // Route for root / web page
   Serial.print("IP Address: http://");
   Serial.println(WiFi.localIP());
-
-  server.on("/raw", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(SPIFFS, "/img.raw", "image/raw");; });
-  server.on("/jpg", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(SPIFFS, "/img.jpg", "image/jpg");; });
-  server.begin();
-  Serial.println("Server begin");
 }
 
 void initTFInterpreter()
@@ -358,18 +319,77 @@ void initTFInterpreter()
 }
 
 
+
+void httpsHandler()
+{
+  WiFiClientSecure *client = new WiFiClientSecure;
+  HTTPClient https;
+  if(client) {
+    client->setInsecure();
+
+
+
+    //Initializing an HTTPS communication using the secure client
+    Serial.print("[HTTPS] begin...\n");
+    if (https.begin(*client, _server)) {  // HTTPS
+      Serial.print("[HTTPS] POST...\n");
+
+      camera_fb_t *fb = esp_camera_fb_get();
+      if (!fb)
+      {
+        Serial.printf("\nFailed to get frame.");
+      }
+      uint8_t *fbBuf = fb->buf;
+      size_t fbLen = fb->len;
+
+      https.addHeader("accept", "*/*");
+      https.addHeader("Content-Type", "image/jpeg");
+      https.addHeader("Content-Length", (String)fbLen);
+
+      int httpCode = https.POST(fbBuf, fbLen);
+
+
+      if (httpCode > 0) {
+
+        Serial.printf("[HTTPS] POST... code: %d\n", httpCode);
+        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+          String payload = https.getString();
+          Serial.println(payload);
+
+          if (payload == "Image accepted")
+          {
+            Serial.println("-- Image was a success");
+          }
+          
+        }
+        else
+        {
+          Serial.printf("\nNo payload code");
+        }
+      }
+      else {
+        Serial.printf("[HTTPS] POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+      }
+      https.end();
+    }
+  }
+  else {
+    Serial.printf("[HTTPS] Unable to connect\n");
+  }
+  https.end();
+}
+
+
 void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // disable brownout detector
   Serial.begin(115200);
   setupCamera();
-  Serial.println("DONE SETUP");
   delay(2000);
-  saveImg();
-  delay(2000);
-  initWifiAndServer();
+  initWifi();
   delay(2000);
   initTFInterpreter();
+  Serial.println("\n-- DONE SETUP --\n");
   Serial.println("---- Ready! ---- ");
 }
 
@@ -378,13 +398,23 @@ void loop()
 {
   if (Serial.read() == 'w')
   {
-    delay(3000);
+    Serial.printf("\n-- LOOP motion detected");
+    
     saveImg();
-    String result = inferCarImage(imageBuffer);
+    delay(20);
+    String result = inferCarImage();
+    delay(20);
     Serial.print("Testing License. Result:");
+    delay(20);
     Serial.println(result);
-    delay(3000);
-  };
+    delay(20);
+    httpsHandler();
 
+
+    Serial.printf("\nESP FREE HEAP MEMORY: %d", ESP.getFreeHeap());
+    Serial.printf("\nESP FREE PSRAM MEMORY: %d", ESP.getFreePsram());
+    Serial.printf("\nESP FREE SKETCH MEMORY: %d", ESP.getFreeSketchSpace());
+    Serial.printf("\n--- LOOP IS DONE ---\n");    
+  }
   delay(10);
 }
